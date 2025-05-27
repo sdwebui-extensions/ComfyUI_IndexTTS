@@ -16,15 +16,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-from indextts.BigVGAN.models import BigVGAN as Generator
-from indextts.gpt.model import UnifiedVoice
-from indextts.utils.checkpoint import load_checkpoint
-from indextts.utils.feature_extractors import MelSpectrogramFeatures
-from indextts.utils.front import TextNormalizer, TextTokenizer
-
 
 models_dir = folder_paths.models_dir
 models_path = os.path.join(models_dir, "TTS", "Index-TTS")
+cache_models_path = os.path.join(folder_paths.cache_dir, "TTS", "Index-TTS")
 
 
 if torch.cuda.is_available():
@@ -59,6 +54,10 @@ class IndexTTS:
             model_dir (str): path to the model directory.
             device (str): device to use (e.g., 'cuda:0', 'cpu'). If None, it will be set automatically based on the availability of CUDA or MPS.
         """
+        from indextts.BigVGAN.models import BigVGAN as Generator
+        from indextts.gpt.model import UnifiedVoice
+        from indextts.utils.checkpoint import load_checkpoint
+        from indextts.utils.front import TextNormalizer, TextTokenizer
         if device is not None:
             self.device = device
             self.is_fp16 = False if device == "cpu" else is_fp16
@@ -97,6 +96,9 @@ class IndexTTS:
         # print(">> vqvae weights restored from:", self.dvae_path)
         self.gpt = UnifiedVoice(**self.cfg.gpt)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
+        if not os.path.exists(self.gpt_path) and os.path.exists(cache_models_path):
+            self.gpt_path = os.path.join(cache_models_path, self.cfg.gpt_checkpoint)
+            self.model_dir = cache_models_path
         load_checkpoint(self.gpt, self.gpt_path)
         self.gpt = self.gpt.to(self.device)
         if self.is_fp16:
@@ -246,6 +248,7 @@ class IndexTTS:
     # 快速推理：对于“多句长文本”，可实现至少 2~10 倍以上的速度提升~ （First modified by sunnyboxs 2025-04-16）
     def infer_fast(self, audio_prompt, text, top_p, top_k, temperature, bucket_enable, max_mel_tokens, verbose=False):
         print(">> start fast inference...")
+        from indextts.utils.feature_extractors import MelSpectrogramFeatures
         self._set_gr_progress(0, "start fast inference...")
         if verbose:
             print(f"origin text:{text}")
@@ -412,6 +415,7 @@ class IndexTTS:
     # 原始推理模式
     def infer(self, audio_prompt, text, top_p, top_k, temperature, max_mel_tokens, verbose=False):
         print(">> start inference...")
+        from indextts.utils.feature_extractors import MelSpectrogramFeatures
         self._set_gr_progress(0, "start inference...")
         if verbose:
             print(f"origin text:{text}")

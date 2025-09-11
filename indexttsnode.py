@@ -31,7 +31,7 @@ models_path_v2 = os.path.join(models_dir, "TTS", "IndexTTS-2")
 cache_dir = folder_paths.get_temp_directory()
 speakers_dir = os.path.join(models_dir, "TTS", "speakers")
 cache_models_path = os.path.join(folder_paths.cache_dir, "models/TTS", "Index-TTS")
-cache_models_path_v2 = os.path.join(folder_paths.cache_dir, "models/TTS", "Index-TTS-2")
+cache_models_path_v2 = os.path.join(folder_paths.cache_dir, "models/TTS", "IndexTTS-2")
 if not os.path.exists(os.path.join(models_dir, "TTS", "campplus", "campplus_cn_common.bin")):
     models_dir = os.path.join(folder_paths.cache_dir, "models")
 
@@ -150,7 +150,8 @@ class IndexTTS2:
             self.is_fp16 = False
             self.use_cuda_kernel = False
             print(">> Be patient, it may take a while to run in CPU mode.")
-
+        if not os.path.exists(cfg_path):
+            cfg_path = os.path.join(cache_models_path_v2, "config.yaml")
         self.cfg = OmegaConf.load(cfg_path)
         self.model_dir = model_dir
         self.dtype = torch.float16 if self.is_fp16 else None

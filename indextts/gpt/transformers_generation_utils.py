@@ -1002,6 +1002,8 @@ class GenerationMixin:
                     device=device,
                 )
             )
+        if not hasattr(generation_config, "forced_decoder_ids"):
+            setattr(generation_config, "forced_decoder_ids", None)
         if generation_config.forced_decoder_ids is not None:
             # TODO (sanchit): move this exception to GenerationConfig.validate() when TF & FLAX are aligned with PT
             raise ValueError(

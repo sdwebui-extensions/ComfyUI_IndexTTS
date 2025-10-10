@@ -30,8 +30,14 @@ from transformers.cache_utils import (
     DynamicCache,
     EncoderDecoderCache,
     OffloadedCache,
-    QuantizedCacheConfig,
+    QuantizedCache,
     StaticCache,
+    OffloadedStaticCache,
+    SlidingWindowCache,
+    HybridCache,
+    HybridChunkedCache,
+    OffloadedHybridCache,
+    OffloadedHybridCache,
 )
 from transformers.configuration_utils import PretrainedConfig
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
@@ -55,16 +61,14 @@ from transformers.generation.candidate_generator import (
     AssistedCandidateGeneratorDifferentTokenizers,
     CandidateGenerator,
     PromptLookupCandidateGenerator,
-    _crop_past_key_values,
     _prepare_attention_mask,
     _prepare_token_type_ids,
 )
 from transformers.generation.configuration_utils import (
-    NEED_SETUP_CACHE_CLASSES_MAPPING,
-    QUANT_BACKEND_CLASSES_MAPPING,
     GenerationConfig,
     GenerationMode,
 )
+from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.generation.logits_process import (
     EncoderNoRepeatNGramLogitsProcessor,
     EncoderRepetitionPenaltyLogitsProcessor,
@@ -113,6 +117,56 @@ logger = logging.get_logger(__name__)
 
 if is_accelerate_available():
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+NEED_SETUP_CACHE_CLASSES_MAPPING = {
+    "static": StaticCache,
+    "offloaded_static": OffloadedStaticCache,
+    "sliding_window": SlidingWindowCache,
+    "hybrid": HybridCache,
+    "hybrid_chunked": HybridChunkedCache,
+    "offloaded_hybrid": OffloadedHybridCache,
+    "offloaded_hybrid_chunked": OffloadedHybridCache,
+}
+
+def _crop_past_key_values(model, past_key_values, max_length):
+    """Crops the past key values up to a certain maximum length."""
+    new_past = []
+    if isinstance(past_key_values, Cache):
+        past_key_values.crop(max_length)
+    elif model.config.is_encoder_decoder:
+        for idx in range(len(past_key_values)):
+            new_past.append(
+                (
+                    past_key_values[idx][0][:, :, :max_length, :],
+                    past_key_values[idx][1][:, :, :max_length, :],
+                    past_key_values[idx][2],
+                    past_key_values[idx][3],
+                )
+            )
+        past_key_values = tuple(new_past)
+    # gptbigcode is special and stores kv in shape (batch_size, seq_len, dim), if it's a multi_query model
+    elif "gptbigcode" in model.__class__.__name__.lower() or (
+        model.config.architectures is not None and "gptbigcode" in model.config.architectures[0].lower()
+    ):
+        if model.config.multi_query:
+            for idx in range(len(past_key_values)):
+                past_key_values[idx] = past_key_values[idx][:, :max_length, :]
+        else:
+            for idx in range(len(past_key_values)):
+                past_key_values[idx] = past_key_values[idx][:, :, :max_length, :]
+    elif past_key_values is not None:
+        for idx in range(len(past_key_values)):
+            if past_key_values[idx] != ([], []):
+                new_past.append(
+                    (
+                        past_key_values[idx][0][:, :, :max_length, :],
+                        past_key_values[idx][1][:, :, :max_length, :],
+                    )
+                )
+            else:
+                new_past.append((past_key_values[idx][0], past_key_values[idx][1]))
+        past_key_values = tuple(new_past)
+    return past_key_values
 
 
 @dataclass
@@ -1747,9 +1801,9 @@ class GenerationMixin:
                 cache_config = (
                     generation_config.cache_config
                     if generation_config.cache_config is not None
-                    else QuantizedCacheConfig()
+                    else QuantizedCache()
                 )
-                cache_class = QUANT_BACKEND_CLASSES_MAPPING[cache_config.backend]
+                cache_class = AUTO_QUANTIZER_MAPPING[cache_config.backend]
 
                 # if cache_config.backend == "quanto" and not (is_optimum_quanto_available() or is_quanto_available()):
                 if cache_config.backend == "quanto" and not is_optimum_quanto_available():

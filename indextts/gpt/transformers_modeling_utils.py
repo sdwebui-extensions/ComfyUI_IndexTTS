@@ -69,11 +69,8 @@ from transformers.utils import (
     ADAPTER_WEIGHTS_NAME,
     CONFIG_NAME,
     DUMMY_INPUTS,
-    FLAX_WEIGHTS_NAME,
     SAFE_WEIGHTS_INDEX_NAME,
     SAFE_WEIGHTS_NAME,
-    TF2_WEIGHTS_NAME,
-    TF_WEIGHTS_NAME,
     WEIGHTS_INDEX_NAME,
     WEIGHTS_NAME,
     ContextManagers,
@@ -106,6 +103,10 @@ from transformers.utils.import_utils import (
     is_torchdynamo_compiling,
 )
 from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
+
+FLAX_WEIGHTS_NAME = "flax_model.msgpack"
+TF2_WEIGHTS_NAME = "tf_model.h5"
+TF_WEIGHTS_NAME = "model.ckpt"
 
 
 XLA_USE_BF16 = os.environ.get("XLA_USE_BF16", "0").upper()

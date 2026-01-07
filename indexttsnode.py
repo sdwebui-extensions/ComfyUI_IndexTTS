@@ -24,6 +24,7 @@ if current_dir not in sys.path:
 import safetensors
 import random
 import torch.nn.functional as F
+from comfy.cli_args import args
 
 models_dir = folder_paths.models_dir
 models_path = os.path.join(models_dir, "TTS", "Index-TTS")
@@ -37,7 +38,7 @@ if not os.path.exists(os.path.join(models_dir, "TTS", "campplus", "campplus_cn_c
 
 
 if torch.cuda.is_available():
-    device = "cuda"
+    device = f"cuda:{args.rank}"
 elif hasattr(torch, "mps") and torch.backends.mps.is_available():
     device = "mps"
 else:
@@ -138,7 +139,7 @@ class IndexTTS2:
             self.is_fp16 = False if device == "cpu" else is_fp16
             self.use_cuda_kernel = use_cuda_kernel is not None and use_cuda_kernel and device.startswith("cuda")
         elif torch.cuda.is_available():
-            self.device = "cuda:0"
+            self.device = f"cuda:{args.rank}"
             self.is_fp16 = is_fp16
             self.use_cuda_kernel = use_cuda_kernel is None or use_cuda_kernel
         elif hasattr(torch, "mps") and torch.backends.mps.is_available():
@@ -810,7 +811,7 @@ class IndexTTS:
             self.is_fp16 = False if device == "cpu" else is_fp16
             self.use_cuda_kernel = use_cuda_kernel is not None and use_cuda_kernel and device.startswith("cuda")
         elif torch.cuda.is_available():
-            self.device = "cuda:0"
+            self.device = f"cuda:{args.rank}"
             self.is_fp16 = is_fp16
             self.use_cuda_kernel = use_cuda_kernel is None or use_cuda_kernel
         elif hasattr(torch, "mps") and torch.backends.mps.is_available():
@@ -1473,91 +1474,103 @@ class IndexTTSRun:
         unload_model=True,
         dialogue_audio_s2=None,
         ):
-        if deepspeed:
-            is_fp16 = True
-        else:
-            is_fp16 = False
-        if version == "v1.5":
-            cfg_path=f"{current_dir}/checkpoints/config_v1_5.yaml"
-        else:
-            cfg_path=f"{current_dir}/checkpoints/config.yaml"
-        
-        waveform = audio["waveform"].squeeze(0)
-        sr = audio["sample_rate"]
-        audio_prompt = AudioCacheManager(cache_dir).process_audio(waveform, sr)
-        if self.audio_prompt is None or self.audio_prompt != audio_prompt:
-            self.audio_prompt = audio_prompt
-
-        global INDEX_TTS
-        if INDEX_TTS is None or self.version != version:
-            self.version = version
-            INDEX_TTS = IndexTTS(cfg_path=cfg_path, is_fp16=is_fp16, use_cuda_kernel=custom_cuda_kernel)
-
-        if fast_inference:
-            if dialogue_audio_s2 is not None:
-                audio_1 = AudioCacheManager(cache_dir).process_audio(waveform, sr)
-                audio_2 = AudioCacheManager(cache_dir).process_audio(dialogue_audio_s2["waveform"].squeeze(0), dialogue_audio_s2["sample_rate"])
-                ress = []
-                for t, a, n in self.get_speaker_text_audio(text, audio_1, audio_2):
-                    res_sub = INDEX_TTS.infer_fast(
-                    a, 
-                    t, 
-                    top_p=top_p, 
-                    top_k=top_k, 
-                    temperature=temperature, 
-                    max_mel_tokens=max_mel_tokens, 
-                    max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                    sentences_bucket_max_size=sentences_bucket_max_size,
-                    num_beams=num_beams
-                    )
-                    ress.append([res_sub[0].squeeze(0), n])
-                res = (torch.cat(list(zip(*sorted(ress, key=lambda x: x[1])))[0], dim=0).unsqueeze(0), res_sub[1])
+        if args.rank==0:
+            if deepspeed:
+                is_fp16 = True
             else:
-                res = INDEX_TTS.infer_fast(
-                    self.audio_prompt, 
-                    text, 
-                    top_p=top_p, 
-                    top_k=top_k, 
-                    temperature=temperature, 
-                    max_mel_tokens=max_mel_tokens, 
-                    max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                    sentences_bucket_max_size=sentences_bucket_max_size,
-                    num_beams=num_beams
-                    )
-        else:
-            if dialogue_audio_s2 is not None:
-                audio_1 = AudioCacheManager(cache_dir).process_audio(waveform, sr)
-                audio_2 = AudioCacheManager(cache_dir).process_audio(dialogue_audio_s2["waveform"].squeeze(0), dialogue_audio_s2["sample_rate"])
-                ress = []
-                for t, a, n in self.get_speaker_text_audio(text, audio_1, audio_2):
-                    res_sub = INDEX_TTS.infer(
-                    a,
-                    t,
-                    top_p=top_p,
-                    top_k=top_k,
-                    temperature=temperature,
-                    max_mel_tokens=max_mel_tokens,
-                    num_beams=num_beams,
-                    max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                    )
-                    ress.append([res_sub[0].squeeze(0), n])
-                res = (torch.cat(list(zip(*sorted(ress, key=lambda x: x[1])))[0], dim=0).unsqueeze(0), res_sub[1])
+                is_fp16 = False
+            if version == "v1.5":
+                cfg_path=f"{current_dir}/checkpoints/config_v1_5.yaml"
             else:
-                res = INDEX_TTS.infer(
-                    self.audio_prompt, 
-                    text, 
-                    top_p=top_p, 
-                    top_k=top_k, 
-                    temperature=temperature, 
-                    max_mel_tokens=max_mel_tokens,
-                    num_beams=num_beams,
-                    max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                    )
+                cfg_path=f"{current_dir}/checkpoints/config.yaml"
+            
+            waveform = audio["waveform"].squeeze(0)
+            sr = audio["sample_rate"]
+            audio_prompt = AudioCacheManager(cache_dir).process_audio(waveform, sr)
+            if self.audio_prompt is None or self.audio_prompt != audio_prompt:
+                self.audio_prompt = audio_prompt
 
-        if unload_model:
-            INDEX_TTS.clean()
-            INDEX_TTS = None
-            torch.cuda.empty_cache()
+            global INDEX_TTS
+            if INDEX_TTS is None or self.version != version:
+                self.version = version
+                INDEX_TTS = IndexTTS(cfg_path=cfg_path, is_fp16=is_fp16, use_cuda_kernel=custom_cuda_kernel)
+
+            if fast_inference:
+                if dialogue_audio_s2 is not None:
+                    audio_1 = AudioCacheManager(cache_dir).process_audio(waveform, sr)
+                    audio_2 = AudioCacheManager(cache_dir).process_audio(dialogue_audio_s2["waveform"].squeeze(0), dialogue_audio_s2["sample_rate"])
+                    ress = []
+                    for t, a, n in self.get_speaker_text_audio(text, audio_1, audio_2):
+                        res_sub = INDEX_TTS.infer_fast(
+                        a, 
+                        t, 
+                        top_p=top_p, 
+                        top_k=top_k, 
+                        temperature=temperature, 
+                        max_mel_tokens=max_mel_tokens, 
+                        max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                        sentences_bucket_max_size=sentences_bucket_max_size,
+                        num_beams=num_beams
+                        )
+                        ress.append([res_sub[0].squeeze(0), n])
+                    res = (torch.cat(list(zip(*sorted(ress, key=lambda x: x[1])))[0], dim=0).unsqueeze(0), res_sub[1])
+                else:
+                    res = INDEX_TTS.infer_fast(
+                        self.audio_prompt, 
+                        text, 
+                        top_p=top_p, 
+                        top_k=top_k, 
+                        temperature=temperature, 
+                        max_mel_tokens=max_mel_tokens, 
+                        max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                        sentences_bucket_max_size=sentences_bucket_max_size,
+                        num_beams=num_beams
+                        )
+            else:
+                if dialogue_audio_s2 is not None:
+                    audio_1 = AudioCacheManager(cache_dir).process_audio(waveform, sr)
+                    audio_2 = AudioCacheManager(cache_dir).process_audio(dialogue_audio_s2["waveform"].squeeze(0), dialogue_audio_s2["sample_rate"])
+                    ress = []
+                    for t, a, n in self.get_speaker_text_audio(text, audio_1, audio_2):
+                        res_sub = INDEX_TTS.infer(
+                        a,
+                        t,
+                        top_p=top_p,
+                        top_k=top_k,
+                        temperature=temperature,
+                        max_mel_tokens=max_mel_tokens,
+                        num_beams=num_beams,
+                        max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                        )
+                        ress.append([res_sub[0].squeeze(0), n])
+                    res = (torch.cat(list(zip(*sorted(ress, key=lambda x: x[1])))[0], dim=0).unsqueeze(0), res_sub[1])
+                else:
+                    res = INDEX_TTS.infer(
+                        self.audio_prompt, 
+                        text, 
+                        top_p=top_p, 
+                        top_k=top_k, 
+                        temperature=temperature, 
+                        max_mel_tokens=max_mel_tokens,
+                        num_beams=num_beams,
+                        max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                        )
+
+            if unload_model:
+                INDEX_TTS.clean()
+                INDEX_TTS = None
+                torch.cuda.empty_cache()
+        if args.world_size>1:
+            if args.rank==0:
+                torch.save({"waveform": res[0].unsqueeze(0), "sample_rate": res[1]}, 'run.pth')
+            torch.distributed.barrier()
+            if args.rank>0:
+                result = torch.load('run.pth')
+            torch.distributed.barrier()
+            if args.rank==0:
+                os.system('rm -rf run.pth')
+            else:
+                return (result, )
 
         return ({"waveform": res[0].unsqueeze(0), "sample_rate": res[1]},)
 
@@ -1763,56 +1776,95 @@ class IndexTTS2Run:
         emo_text_s2=None, 
         use_random_s2=False, 
         ):
+        if args.rank==0:
         
-        if deepspeed:
-            is_fp16 = True
-        else:
-            is_fp16 = False
-
-        waveform = audio["waveform"].squeeze(0)
-        sr = audio["sample_rate"]
-        audio_prompt = AudioCacheManager(cache_dir).process_audio(waveform, sr)
-        if self.audio_prompt is None or self.audio_prompt != audio_prompt:
-            self.audio_prompt = audio_prompt
-
-        global INDEX_TTS2
-        if INDEX_TTS2 is None:
-            INDEX_TTS2 = IndexTTS2(use_cuda_kernel=custom_cuda_kernel, is_fp16=is_fp16)
-
-        import ast
-        if emo_vector is not None and len(emo_vector.strip()) > 17:
-            emo_vector = ast.literal_eval(emo_vector)
-        else:
-            emo_vector = None
-
-        if emo_audio_prompt is not None:
-            emo_audio_prompt_path = AudioCacheManager(cache_dir).process_audio(emo_audio_prompt["waveform"].squeeze(0), emo_audio_prompt["sample_rate"])
-        else:
-            emo_audio_prompt_path = None
-
-        if dialogue_audio_s2 is not None:
-            audio_1 = AudioCacheManager(cache_dir).process_audio(waveform, sr)
-            audio_2 = AudioCacheManager(cache_dir).process_audio(dialogue_audio_s2["waveform"].squeeze(0), dialogue_audio_s2["sample_rate"])
-
-            if emo_vector_s2 is not None and len(emo_vector_s2.strip()) > 17:
-                emo_vector_s2 = ast.literal_eval(emo_vector_s2)
+            if deepspeed:
+                is_fp16 = True
             else:
-                emo_vector_s2 = None
+                is_fp16 = False
 
-            if emo_audio_prompt_s2 is not None:
-                emo_audio_prompt_path_s2 = AudioCacheManager(cache_dir).process_audio(emo_audio_prompt_s2["waveform"].squeeze(0), emo_audio_prompt_s2["sample_rate"])
+            waveform = audio["waveform"].squeeze(0)
+            sr = audio["sample_rate"]
+            audio_prompt = AudioCacheManager(cache_dir).process_audio(waveform, sr)
+            if self.audio_prompt is None or self.audio_prompt != audio_prompt:
+                self.audio_prompt = audio_prompt
+
+            global INDEX_TTS2
+            if INDEX_TTS2 is None:
+                INDEX_TTS2 = IndexTTS2(use_cuda_kernel=custom_cuda_kernel, is_fp16=is_fp16)
+
+            import ast
+            if emo_vector is not None and len(emo_vector.strip()) > 17:
+                emo_vector = ast.literal_eval(emo_vector)
             else:
-                emo_audio_prompt_path_s2 = None
+                emo_vector = None
 
-            ress = []
-            for t, a, n in self.get_speaker_text_audio(text, audio_1, audio_2):
-                if a == audio_1:
-                    res_sub = INDEX_TTS2.infer(
-                    a,
-                    t,
-                    top_p=top_p,
-                    top_k=top_k,
-                    temperature=temperature,
+            if emo_audio_prompt is not None:
+                emo_audio_prompt_path = AudioCacheManager(cache_dir).process_audio(emo_audio_prompt["waveform"].squeeze(0), emo_audio_prompt["sample_rate"])
+            else:
+                emo_audio_prompt_path = None
+
+            if dialogue_audio_s2 is not None:
+                audio_1 = AudioCacheManager(cache_dir).process_audio(waveform, sr)
+                audio_2 = AudioCacheManager(cache_dir).process_audio(dialogue_audio_s2["waveform"].squeeze(0), dialogue_audio_s2["sample_rate"])
+
+                if emo_vector_s2 is not None and len(emo_vector_s2.strip()) > 17:
+                    emo_vector_s2 = ast.literal_eval(emo_vector_s2)
+                else:
+                    emo_vector_s2 = None
+
+                if emo_audio_prompt_s2 is not None:
+                    emo_audio_prompt_path_s2 = AudioCacheManager(cache_dir).process_audio(emo_audio_prompt_s2["waveform"].squeeze(0), emo_audio_prompt_s2["sample_rate"])
+                else:
+                    emo_audio_prompt_path_s2 = None
+
+                ress = []
+                for t, a, n in self.get_speaker_text_audio(text, audio_1, audio_2):
+                    if a == audio_1:
+                        res_sub = INDEX_TTS2.infer(
+                        a,
+                        t,
+                        top_p=top_p,
+                        top_k=top_k,
+                        temperature=temperature,
+                        max_mel_tokens=max_mel_tokens,
+                        num_beams=num_beams,
+                        max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                        emo_audio_prompt=emo_audio_prompt_path, 
+                        emo_alpha=emo_alpha,
+                        emo_vector=emo_vector,
+                        use_emo_text=use_emo_text, 
+                        emo_text=emo_text, 
+                        use_random=use_random, 
+                        )
+                        ress.append([res_sub[0].squeeze(0), n])
+                    else:
+                        res_sub = INDEX_TTS2.infer(
+                        a,
+                        t,
+                        top_p=top_p,
+                        top_k=top_k,
+                        temperature=temperature,
+                        max_mel_tokens=max_mel_tokens,
+                        num_beams=num_beams,
+                        max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                        emo_audio_prompt=emo_audio_prompt_path_s2, 
+                        emo_alpha=emo_alpha_s2,
+                        emo_vector=emo_vector_s2,
+                        use_emo_text=use_emo_text_s2, 
+                        emo_text=emo_text_s2, 
+                        use_random=use_random_s2, 
+                        )
+                        ress.append([res_sub[0].squeeze(0), n])
+                        
+                res = (torch.cat(list(zip(*sorted(ress, key=lambda x: x[1])))[0], dim=0).unsqueeze(0), res_sub[1])
+            else:
+                res = INDEX_TTS2.infer(
+                    self.audio_prompt, 
+                    text, 
+                    top_p=top_p, 
+                    top_k=top_k, 
+                    temperature=temperature, 
                     max_mel_tokens=max_mel_tokens,
                     num_beams=num_beams,
                     max_text_tokens_per_sentence=max_text_tokens_per_sentence,
@@ -1823,49 +1875,22 @@ class IndexTTS2Run:
                     emo_text=emo_text, 
                     use_random=use_random, 
                     )
-                    ress.append([res_sub[0].squeeze(0), n])
-                else:
-                    res_sub = INDEX_TTS2.infer(
-                    a,
-                    t,
-                    top_p=top_p,
-                    top_k=top_k,
-                    temperature=temperature,
-                    max_mel_tokens=max_mel_tokens,
-                    num_beams=num_beams,
-                    max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                    emo_audio_prompt=emo_audio_prompt_path_s2, 
-                    emo_alpha=emo_alpha_s2,
-                    emo_vector=emo_vector_s2,
-                    use_emo_text=use_emo_text_s2, 
-                    emo_text=emo_text_s2, 
-                    use_random=use_random_s2, 
-                    )
-                    ress.append([res_sub[0].squeeze(0), n])
-                    
-            res = (torch.cat(list(zip(*sorted(ress, key=lambda x: x[1])))[0], dim=0).unsqueeze(0), res_sub[1])
-        else:
-            res = INDEX_TTS2.infer(
-                self.audio_prompt, 
-                text, 
-                top_p=top_p, 
-                top_k=top_k, 
-                temperature=temperature, 
-                max_mel_tokens=max_mel_tokens,
-                num_beams=num_beams,
-                max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                emo_audio_prompt=emo_audio_prompt_path, 
-                emo_alpha=emo_alpha,
-                emo_vector=emo_vector,
-                use_emo_text=use_emo_text, 
-                emo_text=emo_text, 
-                use_random=use_random, 
-                )
 
-        if unload_model:
-            INDEX_TTS2.clean()
-            INDEX_TTS2 = None
-            torch.cuda.empty_cache()
+            if unload_model:
+                INDEX_TTS2.clean()
+                INDEX_TTS2 = None
+                torch.cuda.empty_cache()
+        if args.world_size>1:
+            if args.rank==0:
+                torch.save({"waveform": res[0].unsqueeze(0), "sample_rate": res[1]}, 'run.pth')
+            torch.distributed.barrier()
+            if args.rank>0:
+                result = torch.load('run.pth')
+            torch.distributed.barrier()
+            if args.rank==0:
+                os.system('rm -rf run.pth')
+            else:
+                return (result, )
 
         return ({"waveform": res[0].unsqueeze(0), "sample_rate": res[1]},)
 
